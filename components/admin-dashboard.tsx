@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
     LayoutDashboard,
     Users,
@@ -49,6 +49,16 @@ import {
     SelectValue,
 } from '@/components/ui/select'
 import { useAuth } from '@/lib/auth-context'
+import { adminApi } from '@/lib/api'
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    DialogFooter,
+} from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { mockUsers, mockEvents, mockActivityLog, mockReports, mockOrganizerApplications } from '@/lib/mock-data'
 import {
     BarChart as RechartsBarChart,
@@ -80,6 +90,81 @@ export function AdminDashboard({ view = 'overview' }: AdminDashboardProps) {
     const { user } = useAuth()
     const [userSearch, setUserSearch] = useState('')
     const [userRoleFilter, setUserRoleFilter] = useState('all')
+
+    // Live Pending Organizers state
+    const [pendingOrganizers, setPendingOrganizers] = useState<any[]>([])
+    const [loadingPending, setLoadingPending] = useState(false)
+    const [selectedOrganizer, setSelectedOrganizer] = useState<any | null>(null)
+    const [rejectionReason, setRejectionReason] = useState('')
+    const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
+    const [submitting, setSubmitting] = useState(false)
+
+    const fetchPendingOrganizers = async () => {
+        setLoadingPending(true)
+        try {
+            const res = await adminApi.getPendingOrganizers()
+            if (res.success) {
+                setPendingOrganizers(res.data)
+            } else {
+                console.error(res.message || 'Failed to fetch pending organizers')
+            }
+        } catch (err) {
+            console.error('Fetch pending organizers error:', err)
+        } finally {
+            setLoadingPending(false)
+        }
+    }
+
+    useEffect(() => {
+        if (view === 'users') {
+            fetchPendingOrganizers()
+        }
+    }, [view])
+
+    const handleApprove = async (orgId: number) => {
+        if (!confirm('Are you sure you want to approve this organizer registration?')) return
+        setSubmitting(true)
+        try {
+            const res = await adminApi.approveOrganizer(orgId)
+            if (res.success) {
+                alert('Organizer account approved successfully!')
+                fetchPendingOrganizers()
+            } else {
+                alert(res.message || 'Failed to approve organizer')
+            }
+        } catch (err) {
+            console.error('Approve organizer error:', err)
+            alert('A network error occurred. Please try again.')
+        } finally {
+            setSubmitting(false)
+        }
+    }
+
+    const handleRejectSubmit = async () => {
+        if (!selectedOrganizer) return
+        if (!rejectionReason || rejectionReason.trim().length < 10) {
+            alert('Please provide a rejection reason of at least 10 characters.')
+            return
+        }
+        setSubmitting(true)
+        try {
+            const res = await adminApi.rejectOrganizer(selectedOrganizer.organizer_id, rejectionReason)
+            if (res.success) {
+                alert('Organizer account rejected successfully.')
+                setRejectDialogOpen(false)
+                setSelectedOrganizer(null)
+                setRejectionReason('')
+                fetchPendingOrganizers()
+            } else {
+                alert(res.message || 'Failed to reject organizer')
+            }
+        } catch (err) {
+            console.error('Reject organizer error:', err)
+            alert('A network error occurred. Please try again.')
+        } finally {
+            setSubmitting(false)
+        }
+    }
 
     // Metrics
     const totalUsers = mockUsers.length
@@ -424,21 +509,52 @@ export function AdminDashboard({ view = 'overview' }: AdminDashboardProps) {
                                 <CardDescription>Review requests for organizer privileges</CardDescription>
                             </CardHeader>
                             <CardContent>
-                                <div className="space-y-4">
-                                    {mockOrganizerApplications.map((app) => (
-                                        <div key={app.id} className="flex items-center justify-between rounded-lg border p-4">
-                                            <div>
-                                                <h4 className="font-semibold">{app.name}</h4>
-                                                <p className="text-sm text-muted-foreground">{app.department} • {app.email}</p>
-                                                <p className="mt-1 text-sm italic">"{app.reason}"</p>
+                                {loadingPending ? (
+                                    <div className="flex justify-center py-6">
+                                        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                                    </div>
+                                ) : pendingOrganizers.length === 0 ? (
+                                    <div className="text-center py-6 text-muted-foreground text-sm">
+                                        No pending organizer applications found.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {pendingOrganizers.map((app) => (
+                                            <div key={app.organizer_id} className="flex flex-col sm:flex-row sm:items-center justify-between rounded-lg border p-4 gap-4">
+                                                <div>
+                                                    <h4 className="font-semibold text-foreground">{app.first_name} {app.last_name}</h4>
+                                                    <div className="text-sm text-muted-foreground space-y-1 mt-1">
+                                                        <p><strong>Organization Type:</strong> {app.organization_type}</p>
+                                                        {app.department_name && <p><strong>Department:</strong> {app.department_name}</p>}
+                                                        <p><strong>Email:</strong> {app.email} • <strong>Phone:</strong> {app.phone_number || 'N/A'}</p>
+                                                        <p className="text-xs"><strong>Applied:</strong> {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : 'N/A'}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-2 self-end sm:self-center">
+                                                    <Button 
+                                                        size="sm" 
+                                                        variant="destructive" 
+                                                        disabled={submitting}
+                                                        onClick={() => {
+                                                            setSelectedOrganizer(app);
+                                                            setRejectDialogOpen(true);
+                                                        }}
+                                                    >
+                                                        Reject
+                                                    </Button>
+                                                    <Button 
+                                                        size="sm" 
+                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                                                        disabled={submitting}
+                                                        onClick={() => handleApprove(app.organizer_id)}
+                                                    >
+                                                        Approve
+                                                    </Button>
+                                                </div>
                                             </div>
-                                            <div className="flex gap-2">
-                                                <Button size="sm" variant="outline">Reject</Button>
-                                                <Button size="sm">Approve</Button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                        ))}
+                                    </div>
+                                )}
                             </CardContent>
                         </Card>
                     </div>
@@ -544,6 +660,54 @@ export function AdminDashboard({ view = 'overview' }: AdminDashboardProps) {
                 )}
 
             </div>
+
+            {/* Rejection Reason Modal */}
+            <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
+                <DialogContent className="sm:max-w-md bg-card border-border">
+                    <DialogHeader>
+                        <DialogTitle className="text-foreground">Reject Organizer Application</DialogTitle>
+                        <DialogDescription className="text-muted-foreground">
+                            Specify the reason why you are rejecting the application from{' '}
+                            <span className="font-semibold text-foreground">
+                                {selectedOrganizer?.first_name} {selectedOrganizer?.last_name}
+                            </span>.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium text-foreground">Rejection Reason</label>
+                            <Textarea
+                                placeholder="Enter a detailed explanation for rejection (minimum 10 characters)..."
+                                className="min-h-[100px] bg-background border-border text-foreground"
+                                value={rejectionReason}
+                                onChange={(e) => setRejectionReason(e.target.value)}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter className="flex sm:justify-between gap-2">
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() => {
+                                setRejectDialogOpen(false)
+                                setSelectedOrganizer(null)
+                                setRejectionReason('')
+                            }}
+                            disabled={submitting}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="destructive"
+                            onClick={handleRejectSubmit}
+                            disabled={submitting || rejectionReason.trim().length < 10}
+                        >
+                            {submitting ? 'Rejecting...' : 'Confirm Rejection'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </DashboardLayout>
     )
 }

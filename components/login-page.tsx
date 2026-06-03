@@ -1,7 +1,6 @@
 'use client'
 
 import React from "react"
-
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -11,7 +10,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/lib/auth-context'
-import { loginCredentials } from '@/lib/mock-data'
 
 const roleRoutes: Record<string, string> = {
   student: '/dashboard/student',
@@ -37,27 +35,20 @@ export function LoginPage() {
     setError('')
     setIsLoading(true)
 
-    const result = login(email, password)
-    
-    if (result.success) {
-      const role = Object.entries(loginCredentials).find(
-        ([, cred]) => cred.email === email
-      )?.[0]
-      
-      if (role && roleRoutes[role]) {
-        router.push(roleRoutes[role])
+    const result = await login(email, password)
+
+    if (result.success && result.user) {
+      const userRole = result.user.role
+      if (roleRoutes[userRole]) {
+        router.push(roleRoutes[userRole])
+      } else {
+        router.push('/')
       }
     } else {
       setError(result.error || 'Login failed')
     }
-    
-    setIsLoading(false)
-  }
 
-  const handleQuickLogin = (role: string) => {
-    const creds = loginCredentials[role as keyof typeof loginCredentials]
-    setEmail(creds.email)
-    setPassword(creds.password)
+    setIsLoading(false)
   }
 
   return (
@@ -99,7 +90,7 @@ export function LoginPage() {
                     {error}
                   </div>
                 )}
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
                   <Input
@@ -136,73 +127,14 @@ export function LoginPage() {
                 <Button type="submit" className="w-full" disabled={isLoading}>
                   {isLoading ? 'Signing in...' : 'Sign In'}
                 </Button>
-              </form>
-            </CardContent>
-          </Card>
 
-          {/* Demo Credentials */}
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-foreground">Demo Accounts</CardTitle>
-              <CardDescription className="text-xs">Click to auto-fill credentials</CardDescription>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('student')}
-                className="text-xs"
-              >
-                Student
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('organizer')}
-                className="text-xs"
-              >
-                Organizer
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('venue_manager')}
-                className="text-xs"
-              >
-                Venue Manager
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('treasurer')}
-                className="text-xs"
-              >
-                Treasurer
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('dean')}
-                className="text-xs"
-              >
-                Dean
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('vice_chancellor')}
-                className="text-xs"
-              >
-                Vice Chancellor
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleQuickLogin('admin')}
-                className="col-span-2 text-xs"
-              >
-                Admin
-              </Button>
+                <div className="text-center text-sm text-muted-foreground mt-4">
+                  Are you an event organizer?{' '}
+                  <Link href="/register" className="text-primary hover:underline font-semibold">
+                    Apply for an account
+                  </Link>
+                </div>
+              </form>
             </CardContent>
           </Card>
         </div>

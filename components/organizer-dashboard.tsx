@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   LayoutDashboard,
   Plus,
@@ -55,8 +55,9 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { useAuth } from '@/lib/auth-context'
+import { eventApi } from '@/lib/api'
 import { mockEvents, mockPaymentVerifications, mockVenues } from '@/lib/mock-data'
-import type { Event, PaymentVerification, EventCategory } from '@/lib/types'
+import type { Event, PaymentVerification, EventCategory, Faculty, Department, ApprovalLevel } from '@/lib/types'
 
 export interface OrganizerDashboardProps {
   view?: 'dashboard' | 'events' | 'payments' | 'analytics'
@@ -71,7 +72,11 @@ const navItems = [
 const statusColors: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-700',
   pending_venue: 'bg-amber-100 text-amber-700',
+  pending_venue_approval: 'bg-amber-100 text-amber-700',
   pending_approval: 'bg-blue-100 text-blue-700',
+  pending_treasurer_approval: 'bg-blue-100 text-blue-700',
+  pending_dean_approval: 'bg-blue-100 text-blue-700',
+  pending_vice_chancellor_approval: 'bg-blue-100 text-blue-700',
   approved: 'bg-green-100 text-green-700',
   rejected: 'bg-red-100 text-red-700',
   completed: 'bg-primary/10 text-primary',
@@ -81,7 +86,11 @@ const statusColors: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   draft: 'Draft',
   pending_venue: 'Pending Venue',
+  pending_venue_approval: 'Pending Venue Approval',
   pending_approval: 'Pending Approval',
+  pending_treasurer_approval: 'Pending Treasurer Approval',
+  pending_dean_approval: 'Pending Dean Approval',
+  pending_vice_chancellor_approval: 'Pending VC Approval',
   approved: 'Approved',
   rejected: 'Rejected',
   completed: 'Completed',
@@ -93,11 +102,17 @@ interface CreateEventForm {
   description: string
   category: EventCategory
   date: string
-  time: string
+  startTime: string
+  endTime: string
   venueId: string
+  capacityType: 'unlimited' | 'specific'
   capacity: string
   price: string
   isFree: boolean
+  targetAudienceType: 'university_wide' | 'specific_faculties'
+  targetFaculties: number[]
+  targetDepartments: number[]
+  bankDetails: string
 }
 
 const initialFormState: CreateEventForm = {
@@ -105,11 +120,17 @@ const initialFormState: CreateEventForm = {
   description: '',
   category: 'academic',
   date: '',
-  time: '',
+  startTime: '',
+  endTime: '',
   venueId: '',
+  capacityType: 'unlimited',
   capacity: '',
   price: '',
   isFree: true,
+  targetAudienceType: 'university_wide',
+  targetFaculties: [],
+  targetDepartments: [],
+  bankDetails: ''
 }
 
 export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardProps) {
@@ -120,13 +141,63 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
   const [createStep, setCreateStep] = useState(1)
   const [formData, setFormData] = useState<CreateEventForm>(initialFormState)
 
-  const [events, setEvents] = useState<Event[]>(mockEvents)
+  const [editingEventId, setEditingEventId] = useState<string | null>(null)
+  const [showViewModal, setShowViewModal] = useState(false)
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null)
+
+  const [events, setEvents] = useState<Event[]>([])
+  const [faculties, setFaculties] = useState<Faculty[]>([])
+  const [departments, setDepartments] = useState<Department[]>([])
+  const [venues, setVenues] = useState<any[]>([])
   // Force empty state for payments as requested
   const [payments, setPayments] = useState<PaymentVerification[]>([])
 
   const myEvents = useMemo(() => {
-    return events.filter((e) => e.organizerId === user?.id)
-  }, [events, user?.id])
+    return events
+  }, [events])
+
+  const [isLoading, setIsLoading] = useState(false)
+const [error, setError] = useState('')
+
+const mapApproverTypeToLevel = (type: string): ApprovalLevel => {
+  switch (type) {
+    case 'VenueManager': return 'venue_manager';
+    case 'Treasurer': return 'treasurer';
+    case 'Dean': return 'dean';
+    case 'ViceChancellor': return 'vice_chancellor';
+    default: return 'venue_manager';
+  }
+}
+
+// Helper: Map backend event to display format
+const mapEventForDisplay = (e: any): Event => ({
+  id: String(e.event_id),
+  name: e.event_name,
+  description: e.description,
+  category: (e.event_category as string).toLowerCase() as EventCategory,
+  date: e.event_date,
+  time: `${e.start_time ? e.start_time.substring(0, 5) : '09:00'} - ${e.end_time ? e.end_time.substring(0, 5) : '17:00'}`,
+  venue: e.venue_name || 'TBD',
+  venueId: String(e.venue_id || ''),
+  capacity: Number(e.capacity),
+  registeredCount: Number(e.registered_count || 0),
+  price: Number(e.ticket_price || 0),
+  isFree: e.event_type === 'Free',
+  organizer: user?.name || '',
+  organizerId: String(e.organizer_id),
+  department: user?.department || '',
+  status: e.status.toLowerCase().replace(/ /g, '_') as Event['status'],
+  approvalChain: e.approvalChain ? e.approvalChain.map((a: any) => ({
+    level: mapApproverTypeToLevel(a.approver_type),
+    status: a.approval_status.toLowerCase() as 'pending' | 'approved' | 'rejected',
+    date: a.approval_date,
+    comment: a.comments || a.rejection_reason || undefined
+  })) : [],
+  createdAt: e.created_date || '',
+  bankDetails: e.bank_details || '',
+  targetFaculties: typeof e.target_faculties === 'string' ? JSON.parse(e.target_faculties) : (e.target_faculties || []),
+  targetDepartments: typeof e.target_departments === 'string' ? JSON.parse(e.target_departments) : (e.target_departments || []),
+})
 
   // Split events for Dashboard view
   // Drafts
@@ -137,7 +208,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
   // Pending Approvals
   const pendingEvents = useMemo(() => {
     return myEvents.filter((e) =>
-      ['pending_venue', 'pending_approval'].includes(e.status)
+      e.status.startsWith('pending')
     )
   }, [myEvents])
 
@@ -146,6 +217,10 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
     return myEvents.filter((e) =>
       ['approved', 'cancelled'].includes(e.status)
     )
+  }, [myEvents])
+
+  const rejectedEvents = useMemo(() => {
+    return myEvents.filter((e) => e.status === 'rejected')
   }, [myEvents])
 
   const pendingPaymentsCount = useMemo(() => {
@@ -166,37 +241,151 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
     return payments.filter((p) => myEventIds.includes(p.eventId) && p.status === 'pending')
   }, [myEvents, payments])
 
-  const handleCreateEvent = () => {
-    const venue = mockVenues.find((v) => v.id === formData.venueId)
-    const newEvent: Event = {
-      id: `event-${Date.now()}`,
-      name: formData.name,
-      description: formData.description,
-      category: formData.category,
-      date: formData.date,
-      time: formData.time,
-      venue: venue?.name || '',
-      venueId: formData.venueId,
-      capacity: parseInt(formData.capacity) || 100,
-      registeredCount: 0,
-      price: formData.isFree ? 0 : parseInt(formData.price) || 0,
-      isFree: formData.isFree,
-      organizer: user?.name || '',
-      organizerId: user?.id || '',
-      department: user?.department || '',
-      status: 'pending_venue',
-      approvalChain: [
-        { level: 'venue_manager', status: 'pending' },
-        { level: 'treasurer', status: 'pending' },
-        { level: 'dean', status: 'pending' },
-        { level: 'vice_chancellor', status: 'pending' },
-      ],
-      createdAt: new Date().toISOString().split('T')[0],
+  // Fetch my events on mount
+useEffect(() => {
+  if (user?.role === 'organizer') {
+    eventApi.getMyEvents().then((res) => {
+      if (res.success) {
+        setEvents(res.data.map(mapEventForDisplay))
+      }
+    })
+    eventApi.getFaculties().then((res) => {
+      if (res.success) setFaculties(res.data)
+    })
+    eventApi.getDepartments().then((res) => {
+      if (res.success) setDepartments(res.data)
+    })
+    eventApi.getVenues().then((res) => {
+      if (res.success) setVenues(res.data)
+    })
+  }
+}, [user])
+
+  const handleCreateEvent = async (isDraft: boolean = false) => {
+  try {
+    setIsLoading(true)
+    setError('')
+
+    if (formData.startTime && formData.endTime) {
+      const [startH, startM] = formData.startTime.split(':').map(Number);
+      const [endH, endM] = formData.endTime.split(':').map(Number);
+      if (endH * 60 + endM <= startH * 60 + startM) {
+        setError('End time must be after start time');
+        setIsLoading(false);
+        return;
+      }
     }
-    setEvents([newEvent, ...events])
-    setShowCreateModal(false)
+
+    // Map form data to backend API format
+    const eventData = {
+      eventName: formData.name,
+      description: formData.description,
+      eventCategory: formData.category.charAt(0).toUpperCase() + formData.category.slice(1), // Capitalize
+      eventType: formData.isFree ? 'Free' : 'Paid',
+      ticketPrice: formData.isFree ? 0 : parseInt(formData.price) || 0,
+      capacity: formData.capacityType === 'unlimited' ? 0 : parseInt(formData.capacity) || 100,
+      targetAudience: formData.targetAudienceType === 'university_wide' ? 'University-wide' : 'Faculty',
+      targetFacultyId: null, // deprecated
+      targetDepartmentId: null, // deprecated
+      targetFaculties: formData.targetAudienceType === 'specific_faculties' ? formData.targetFaculties : [],
+      targetDepartments: formData.targetAudienceType === 'specific_faculties' ? formData.targetDepartments : [],
+      bankDetails: formData.isFree ? null : formData.bankDetails,
+      eventDate: formData.date,
+      startTime: formData.startTime || '09:00',
+      endTime: formData.endTime || '17:00',
+      registrationDeadline: (formData.date && formData.startTime) ? (() => {
+        const start = formData.startTime || '09:00';
+        const [hoursStr, minutesStr] = start.split(':');
+        let hours = parseInt(hoursStr, 10);
+        let minutes = parseInt(minutesStr, 10);
+        
+        // Subtract 5 minutes for safety
+        minutes -= 5;
+        if (minutes < 0) {
+          minutes += 60;
+          hours -= 1;
+        }
+        
+        let deadlineDate = formData.date;
+        if (hours < 0) {
+          hours += 24;
+          // Subtract 1 day from deadlineDate
+          const parts = formData.date.split('-');
+          if (parts.length === 3) {
+            const year = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10) - 1;
+            const day = parseInt(parts[2], 10);
+            const dateObj = new Date(year, month, day);
+            dateObj.setDate(dateObj.getDate() - 1);
+            const prevYear = dateObj.getFullYear();
+            const prevMonth = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const prevDay = String(dateObj.getDate()).padStart(2, '0');
+            deadlineDate = `${prevYear}-${prevMonth}-${prevDay}`;
+          }
+        }
+        
+        const paddedHours = String(hours).padStart(2, '0');
+        const paddedMinutes = String(minutes).padStart(2, '0');
+        return `${deadlineDate}T${paddedHours}:${paddedMinutes}:00`;
+      })() : (formData.date ? `${formData.date}T00:00:00` : null),
+      venueId: parseInt(formData.venueId) || null,
+      isDraft
+    }
+
+    let res;
+    if (editingEventId) {
+      res = await eventApi.updateEvent(Number(editingEventId), eventData)
+    } else {
+      res = await eventApi.createEvent(eventData)
+    }
+
+    if (res.success) {
+      // Refresh events list
+      const eventsRes = await eventApi.getMyEvents()
+      if (eventsRes.success) {
+        setEvents(eventsRes.data.map(mapEventForDisplay))
+      }
+      
+      setShowCreateModal(false)
+      setCreateStep(1)
+      setFormData(initialFormState)
+      setEditingEventId(null)
+    } else {
+      setError(res.message || 'Failed to create event')
+    }
+  } catch (error) {
+    setError('Network error. Please try again.')
+  } finally {
+    setIsLoading(false)
+  }
+}
+
+  const handleEditClick = (event: Event) => {
+    setFormData({
+      name: event.name,
+      description: event.description,
+      category: event.category,
+      date: event.date ? event.date.substring(0, 10) : '',
+      startTime: event.time ? event.time.split(' - ')[0] : '09:00',
+      endTime: event.time ? event.time.split(' - ')[1] : '17:00',
+      venueId: event.venueId,
+      capacityType: event.capacity === null || event.capacity === 0 ? 'unlimited' : 'specific',
+      capacity: event.capacity ? String(event.capacity) : '',
+      price: event.price ? String(event.price) : '',
+      isFree: event.isFree,
+      targetAudienceType: (event.targetFaculties && event.targetFaculties.length > 0) ? 'specific_faculties' : 'university_wide',
+      targetFaculties: event.targetFaculties || [],
+      targetDepartments: event.targetDepartments || [],
+      bankDetails: event.bankDetails || '',
+    })
+    setEditingEventId(event.id)
     setCreateStep(1)
-    setFormData(initialFormState)
+    setShowCreateModal(true)
+  }
+
+  const handleViewClick = (event: Event) => {
+    setSelectedEvent(event)
+    setShowViewModal(true)
   }
 
   const handleDeleteEvent = (eventId: string) => {
@@ -217,7 +406,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
     setShowPaymentModal(false)
   }
 
-  const updateFormData = (field: keyof CreateEventForm, value: string | boolean) => {
+  const updateFormData = (field: keyof CreateEventForm, value: string | boolean | number[]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -229,7 +418,12 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
           <h1 className="text-2xl font-bold text-foreground">Welcome, {user?.name}!</h1>
           <p className="text-muted-foreground">Manage your events and track registrations</p>
         </div>
-        <Button onClick={() => setShowCreateModal(true)}>
+        <Button onClick={() => {
+          setEditingEventId(null)
+          setFormData(initialFormState)
+          setCreateStep(1)
+          setShowCreateModal(true)
+        }}>
           <Plus className="mr-2 h-4 w-4" />
           Create Event
         </Button>
@@ -334,7 +528,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="sm">
+                          <Button variant="outline" size="sm" onClick={() => handleEditClick(event)}>
                             <Edit className="mr-1 h-4 w-4" />
                             Edit
                           </Button>
@@ -353,7 +547,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                 ))
               )}
             </div>
-
+ 
             {/* Pending Approvals Section */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -396,11 +590,11 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="sm">
+                          <Button variant="outline" size="sm" onClick={() => handleViewClick(event)}>
                             <Eye className="mr-1 h-4 w-4" />
                             View
                           </Button>
-                          <Button variant="outline" size="sm">
+                          <Button variant="outline" size="sm" onClick={() => handleEditClick(event)}>
                             <Edit className="mr-1 h-4 w-4" />
                             Edit
                           </Button>
@@ -414,7 +608,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                           </Button>
                         </div>
                       </div>
-
+ 
                       {/* Approval Progress */}
                       {event.status !== 'draft' && (
                         <div className="border-t border-border bg-muted/30 px-4 py-3">
@@ -450,67 +644,116 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
             </div>
           </div>
         )}
-
+ 
         {/* My Events View */}
         {view === 'events' && (
-          <div className="space-y-4">
-            <h2 className="text-lg font-semibold tracking-tight">All Events</h2>
-            {approvedEvents.length === 0 ? (
-              <Card className="p-8 text-center text-muted-foreground border-dashed">
-                <Calendar className="mx-auto h-12 w-12 text-muted-foreground/50" />
-                <p className="mt-4 text-lg font-medium text-foreground">No active events</p>
-                <p>Once approved, events will appear here</p>
-              </Card>
-            ) : (
-              approvedEvents.map((event) => (
-                <Card key={event.id} className="overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="font-semibold text-foreground">{event.name}</h3>
-                          <span
-                            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColors[event.status]
-                              }`}
-                          >
-                            {statusLabels[event.status]}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Calendar className="h-4 w-4" />
-                            {new Date(event.date).toLocaleDateString()}
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <Clock className="h-4 w-4" />
-                            {event.time}
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <Users className="h-4 w-4" />
-                            {event.registeredCount} / {event.capacity}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm">
-                          <Eye className="mr-1 h-4 w-4" />
-                          View
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-destructive hover:bg-destructive/10 bg-transparent"
-                          onClick={() => handleDeleteEvent(event.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <h2 className="text-lg font-semibold tracking-tight">Approved Events</h2>
+              {approvedEvents.length === 0 ? (
+                <Card className="p-8 text-center text-muted-foreground border-dashed">
+                  <Calendar className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                  <p className="mt-4 text-lg font-medium text-foreground">No approved events</p>
+                  <p>Once approved, events will appear here</p>
                 </Card>
-              ))
-            )}
+              ) : (
+                approvedEvents.map((event) => (
+                  <Card key={event.id} className="overflow-hidden">
+                    <CardContent className="p-0">
+                      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-semibold text-foreground">{event.name}</h3>
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColors[event.status]
+                                }`}
+                            >
+                              {statusLabels[event.status]}
+                            </span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <Calendar className="h-4 w-4" />
+                              {new Date(event.date).toLocaleDateString()}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-4 w-4" />
+                              {event.time}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <Users className="h-4 w-4" />
+                              {event.registeredCount} / {event.capacity}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => handleViewClick(event)}>
+                            <Eye className="mr-1 h-4 w-4" />
+                            View
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:bg-destructive/10 bg-transparent"
+                            onClick={() => handleDeleteEvent(event.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <h2 className="text-lg font-semibold tracking-tight text-destructive">Rejected Requests</h2>
+              {rejectedEvents.length === 0 ? (
+                <Card className="p-8 text-center text-muted-foreground border-dashed">
+                  <XCircle className="mx-auto h-12 w-12 text-muted-foreground/30" />
+                  <p className="mt-4 text-lg font-medium text-foreground">No rejected requests</p>
+                  <p className="text-muted-foreground">Rejections from venue manager or other tiers will show here</p>
+                </Card>
+              ) : (
+                rejectedEvents.map((event) => (
+                  <Card key={event.id} className="overflow-hidden border-destructive/20 bg-destructive/5">
+                    <CardContent className="p-0">
+                      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-semibold text-foreground">{event.name}</h3>
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColors[event.status]
+                                }`}
+                            >
+                              {statusLabels[event.status]}
+                            </span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <Calendar className="h-4 w-4" />
+                              {new Date(event.date).toLocaleDateString()}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-4 w-4" />
+                              {event.time}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => handleViewClick(event)}>
+                            <Eye className="mr-1 h-4 w-4" />
+                            View Details
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
           </div>
         )}
 
@@ -726,7 +969,7 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
 
       {/* Create Event Modal */}
       <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Create New Event</DialogTitle>
             <DialogDescription>Step {createStep} of 4</DialogDescription>
@@ -742,8 +985,24 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
             ))}
           </div>
 
+          {error && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+            </div>
+          )}
+
           {createStep === 1 && (
             <div className="space-y-4">
+              <div>
+                <Label htmlFor="organized-by">Organized By</Label>
+                <Input
+                  id="organized-by"
+                  value={user?.organizationType ? `${user.name} (${user.organizationType})` : (user?.name || "")}
+                  disabled
+                  className="mt-1.5 mb-4 bg-muted"
+                />
+              </div>
               <div>
                 <Label htmlFor="event-name">Event Name</Label>
                 <Input
@@ -777,9 +1036,6 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                   <SelectContent>
                     <SelectItem value="academic">Academic</SelectItem>
                     <SelectItem value="entertainment">Entertainment</SelectItem>
-                    <SelectItem value="sports">Sports</SelectItem>
-                    <SelectItem value="cultural">Cultural</SelectItem>
-                    <SelectItem value="technical">Technical</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -798,16 +1054,41 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                   className="mt-1.5"
                 />
               </div>
-              <div>
-                <Label htmlFor="event-time">Time</Label>
-                <Input
-                  id="event-time"
-                  placeholder="e.g., 09:00 - 17:00"
-                  value={formData.time}
-                  onChange={(e) => updateFormData('time', e.target.value)}
-                  className="mt-1.5"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="event-start-time">Start Time</Label>
+                  <Input
+                    id="event-start-time"
+                    type="time"
+                    value={formData.startTime}
+                    onChange={(e) => updateFormData('startTime', e.target.value)}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="event-end-time">End Time</Label>
+                  <Input
+                    id="event-end-time"
+                    type="time"
+                    value={formData.endTime}
+                    onChange={(e) => updateFormData('endTime', e.target.value)}
+                    className="mt-1.5"
+                  />
+                </div>
               </div>
+              {formData.startTime && formData.endTime && (() => {
+                const [startH, startM] = formData.startTime.split(':').map(Number);
+                const [endH, endM] = formData.endTime.split(':').map(Number);
+                if (endH * 60 + endM <= startH * 60 + startM) {
+                  return (
+                    <p className="text-xs text-destructive flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3.5 w-3.5" />
+                      End time must be after start time.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
               <div>
                 <Label htmlFor="event-venue">Venue</Label>
                 <Select
@@ -818,11 +1099,11 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                     <SelectValue placeholder="Select venue" />
                   </SelectTrigger>
                   <SelectContent>
-                    {mockVenues
-                      .filter((v) => v.status === 'available')
+                    {venues
+                      .filter((v) => v.status === 'Available' || v.status === 'available')
                       .map((venue) => (
-                        <SelectItem key={venue.id} value={venue.id}>
-                          {venue.name} (Capacity: {venue.capacity})
+                        <SelectItem key={String(venue.venue_id)} value={String(venue.venue_id)}>
+                          {venue.venue_name} (Capacity: {venue.capacity})
                         </SelectItem>
                       ))}
                   </SelectContent>
@@ -834,17 +1115,121 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
           {createStep === 3 && (
             <div className="space-y-4">
               <div>
-                <Label htmlFor="event-capacity">Target Audience</Label>
-                <Input
-                  id="event-capacity"
-                  type="text"
-                  placeholder="Faculty/ Department/ University-wide"
-                  value={formData.capacity}
-                  onChange={(e) => updateFormData('capacity', e.target.value)}
-                  className="mt-1.5"
-                />
+                <Label>Target Audience</Label>
+                <div className="mt-2 flex gap-4">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="radio"
+                      name="targetAudienceType"
+                      checked={formData.targetAudienceType === 'university_wide'}
+                      onChange={() => updateFormData('targetAudienceType', 'university_wide')}
+                      className="h-4 w-4 accent-primary"
+                    />
+                    <span className="text-sm text-foreground">University-wide</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="radio"
+                      name="targetAudienceType"
+                      checked={formData.targetAudienceType === 'specific_faculties'}
+                      onChange={() => updateFormData('targetAudienceType', 'specific_faculties')}
+                      className="h-4 w-4 accent-primary"
+                    />
+                    <span className="text-sm text-foreground">Specific Faculties</span>
+                  </label>
+                </div>
               </div>
-              <div>
+
+              {formData.targetAudienceType === 'specific_faculties' && (
+                <div className="space-y-4 rounded-lg border p-4">
+                  <div>
+                    <Label className="mb-2 block text-sm">Select Faculties</Label>
+                    <div className="grid grid-cols-2 gap-2 max-h-[150px] overflow-y-auto">
+                      {faculties.map((f) => (
+                        <label key={f.faculty_id} className="flex items-center gap-2">
+                          <input 
+                            type="checkbox"
+                            className="h-4 w-4 accent-primary"
+                            checked={formData.targetFaculties.includes(f.faculty_id)}
+                            onChange={(e) => {
+                              const updated = e.target.checked 
+                                ? [...formData.targetFaculties, f.faculty_id]
+                                : formData.targetFaculties.filter(id => id !== f.faculty_id);
+                              updateFormData('targetFaculties', updated);
+                            }}
+                          />
+                          <span className="text-sm">{f.faculty_name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  {formData.targetFaculties.length > 0 && (
+                    <div className="mt-4">
+                      <Label className="mb-2 block text-sm">Select Departments (Optional)</Label>
+                      <div className="grid grid-cols-2 gap-2 max-h-[150px] overflow-y-auto">
+                        {departments.filter(d => formData.targetFaculties.includes(d.faculty_id)).map((d) => (
+                          <label key={d.department_id} className="flex items-center gap-2">
+                            <input 
+                              type="checkbox"
+                              className="h-4 w-4 accent-primary"
+                              checked={formData.targetDepartments.includes(d.department_id)}
+                              onChange={(e) => {
+                                const updated = e.target.checked 
+                                  ? [...formData.targetDepartments, d.department_id]
+                                  : formData.targetDepartments.filter(id => id !== d.department_id);
+                                updateFormData('targetDepartments', updated);
+                              }}
+                            />
+                            <span className="text-sm">{d.department_name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-4">
+                <Label>Capacity</Label>
+                <div className="mt-2 flex gap-4">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="radio"
+                      name="capacityType"
+                      checked={formData.capacityType === 'unlimited'}
+                      onChange={() => updateFormData('capacityType', 'unlimited')}
+                      className="h-4 w-4 accent-primary"
+                    />
+                    <span className="text-sm text-foreground">Unlimited</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="radio"
+                      name="capacityType"
+                      checked={formData.capacityType === 'specific'}
+                      onChange={() => updateFormData('capacityType', 'specific')}
+                      className="h-4 w-4 accent-primary"
+                    />
+                    <span className="text-sm text-foreground">Specific Number</span>
+                  </label>
+                </div>
+              </div>
+
+              {formData.capacityType === 'specific' && (
+                <div>
+                  <Label htmlFor="event-capacity">Total Capacity</Label>
+                  <Input
+                    id="event-capacity"
+                    type="number"
+                    placeholder="E.g. 500"
+                    value={formData.capacity}
+                    onChange={(e) => updateFormData('capacity', e.target.value)}
+                    className="mt-1.5"
+                  />
+                </div>
+              )}
+
+              <div className="mt-4 border-t pt-4">
                 <Label>Event Type</Label>
                 <div className="mt-2 flex gap-4">
                   <label className="flex cursor-pointer items-center gap-2">
@@ -869,17 +1254,31 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                   </label>
                 </div>
               </div>
+
               {!formData.isFree && (
-                <div>
-                  <Label htmlFor="event-price">Ticket Price (Rs.)</Label>
-                  <Input
-                    id="event-price"
-                    type="number"
-                    placeholder="Enter ticket price"
-                    value={formData.price}
-                    onChange={(e) => updateFormData('price', e.target.value)}
-                    className="mt-1.5"
-                  />
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="event-price">Ticket Price (Rs.)</Label>
+                    <Input
+                      id="event-price"
+                      type="number"
+                      placeholder="Enter ticket price"
+                      value={formData.price}
+                      onChange={(e) => updateFormData('price', e.target.value)}
+                      className="mt-1.5"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="bank-details">Bank Details for Deposit</Label>
+                    <Textarea
+                      id="bank-details"
+                      placeholder="Bank Name, Branch, Account Number, Account Name..."
+                      value={formData.bankDetails}
+                      onChange={(e) => updateFormData('bankDetails', e.target.value)}
+                      className="mt-1.5"
+                      rows={3}
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -904,17 +1303,21 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Time:</span>
-                    <span className="font-medium text-foreground">{formData.time}</span>
+                    <span className="font-medium text-foreground">{formData.startTime} - {formData.endTime}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Venue:</span>
                     <span className="font-medium text-foreground">
-                      {mockVenues.find((v) => v.id === formData.venueId)?.name}
+                      {venues.find((v) => String(v.venue_id) === formData.venueId)?.venue_name || 'TBD'}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Target Audience:</span>
-                    <span className="font-medium text-foreground">{formData.capacity}</span>
+                    <span className="font-medium text-foreground">{formData.targetAudienceType === 'university_wide' ? 'University-wide' : 'Specific Faculties'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Capacity:</span>
+                    <span className="font-medium text-foreground">{formData.capacityType === 'unlimited' ? 'Unlimited' : formData.capacity}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Type:</span>
@@ -928,8 +1331,10 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 h-4 w-4 text-primary" />
                   <p className="text-sm text-muted-foreground">
-                    Your event will be submitted for venue approval first, then go through
-                    the approval chain (Treasurer → Dean → Vice Chancellor).
+                    Your event will be submitted for venue approval first.
+                    {(formData.category === 'entertainment' && user?.organizationType?.includes('Faculty')) && (
+                      <span> Then it will go through the multi-tier approval chain (Treasurer → Dean → Vice Chancellor).</span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -942,22 +1347,47 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                 Back
               </Button>
             )}
+            {createStep === 4 && (
+              <Button
+                variant="secondary"
+                className="flex-1"
+                onClick={() => handleCreateEvent(true)}
+                disabled={isLoading}
+              >
+                {isLoading ? 'Saving...' : 'Save as Draft'}
+              </Button>
+            )}
             <Button
               className="flex-1"
               onClick={() => {
                 if (createStep < 4) {
                   setCreateStep(createStep + 1)
                 } else {
-                  handleCreateEvent()
+                  handleCreateEvent(false)
                 }
               }}
               disabled={
+                isLoading ||
                 (createStep === 1 && (!formData.name || !formData.description)) ||
-                (createStep === 2 && (!formData.date || !formData.time || !formData.venueId)) ||
-                (createStep === 3 && !formData.capacity)
+                (createStep === 2 && (
+                  !formData.date || 
+                  !formData.startTime || 
+                  !formData.endTime || 
+                  !formData.venueId ||
+                  (() => {
+                    const [startH, startM] = formData.startTime.split(':').map(Number);
+                    const [endH, endM] = formData.endTime.split(':').map(Number);
+                    return endH * 60 + endM <= startH * 60 + startM;
+                  })()
+                )) ||
+                (createStep === 3 && (
+                  (formData.capacityType === 'specific' && !formData.capacity) ||
+                  (formData.targetAudienceType === 'specific_faculties' && formData.targetFaculties.length === 0) ||
+                  (!formData.isFree && (!formData.price || !formData.bankDetails))
+                ))
               }
             >
-              {createStep < 4 ? 'Next' : 'Submit Event'}
+              {isLoading ? 'Processing...' : createStep < 4 ? 'Next' : 'Submit Event'}
             </Button>
           </div>
         </DialogContent>
@@ -1022,6 +1452,116 @@ export function OrganizerDashboard({ view = 'dashboard' }: OrganizerDashboardPro
                   <CheckCircle className="mr-2 h-4 w-4" />
                   Approve
                 </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* View Event Details Modal */}
+      <Dialog open={showViewModal} onOpenChange={setShowViewModal}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Event Details</DialogTitle>
+            <DialogDescription>
+              Details submitted for this event
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedEvent && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted p-4">
+                <h3 className="text-lg font-bold text-foreground mb-2">{selectedEvent.name}</h3>
+                <p className="text-sm text-muted-foreground mb-4">{selectedEvent.description}</p>
+                
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Category</span>
+                    <span className="font-medium capitalize text-foreground">{selectedEvent.category}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Status</span>
+                    <span className={`inline-block rounded-full px-2.5 py-0.5 mt-0.5 text-xs font-medium ${statusColors[selectedEvent.status]}`}>
+                      {statusLabels[selectedEvent.status]}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Date</span>
+                    <span className="font-medium text-foreground">{new Date(selectedEvent.date).toLocaleDateString()}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Time</span>
+                    <span className="font-medium text-foreground">{selectedEvent.time}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Venue</span>
+                    <span className="font-medium text-foreground">{selectedEvent.venue}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Capacity</span>
+                    <span className="font-medium text-foreground">
+                      {selectedEvent.capacity ? `${selectedEvent.registeredCount} / ${selectedEvent.capacity} Registered` : 'Unlimited'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Type</span>
+                    <span className="font-medium text-foreground">
+                      {selectedEvent.isFree ? 'Free Event' : `Paid (Rs. ${selectedEvent.price})`}
+                    </span>
+                  </div>
+                </div>
+
+                {!selectedEvent.isFree && selectedEvent.bankDetails && (
+                  <div className="mt-4 pt-4 border-t border-border">
+                    <span className="text-muted-foreground block text-xs mb-1">Bank Details</span>
+                    <p className="text-sm text-foreground bg-background p-2 rounded border border-border whitespace-pre-wrap">
+                      {selectedEvent.bankDetails}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Approval History */}
+              {selectedEvent.status !== 'draft' && selectedEvent.approvalChain && selectedEvent.approvalChain.length > 0 && (
+                <div className="border-t border-border pt-4">
+                  <h4 className="text-sm font-semibold text-foreground mb-3">Approval History</h4>
+                  <div className="space-y-3">
+                    {selectedEvent.approvalChain.map((approval) => (
+                      <div key={approval.level} className="flex items-start gap-3 rounded-lg border p-3 bg-muted/20">
+                        <div className={`mt-0.5 rounded-full p-1 ${
+                          approval.status === 'approved' ? 'bg-success/10 text-success' :
+                          approval.status === 'rejected' ? 'bg-destructive/10 text-destructive' :
+                          'bg-muted text-muted-foreground'
+                        }`}>
+                          {approval.status === 'approved' && <CheckCircle className="h-4 w-4" />}
+                          {approval.status === 'rejected' && <XCircle className="h-4 w-4" />}
+                          {approval.status === 'pending' && <Clock className="h-4 w-4" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-center gap-2">
+                            <p className="font-medium capitalize text-sm text-foreground">{approval.level.replace('_', ' ')}</p>
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              approval.status === 'approved' ? 'bg-success/15 text-success' :
+                              approval.status === 'rejected' ? 'bg-destructive/15 text-destructive' :
+                              'bg-muted text-muted-foreground'
+                            }`}>
+                              {approval.status}
+                            </span>
+                          </div>
+                          {approval.comment && (
+                            <p className="mt-1 text-sm text-muted-foreground bg-background p-2 rounded border italic">
+                              "{approval.comment}"
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2">
+                <Button onClick={() => setShowViewModal(false)}>Close</Button>
               </div>
             </div>
           )}

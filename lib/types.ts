@@ -6,13 +6,15 @@ export interface User {
   email: string
   role: UserRole
   department?: string
+  faculty?: string
   indexNumber?: string
   avatar?: string
   status?: 'active' | 'inactive' | 'pending'
+  organizationType?: string
 }
 
 export type EventCategory = 'academic' | 'entertainment' | 'sports' | 'cultural' | 'technical'
-export type EventStatus = 'draft' | 'pending_venue' | 'pending_approval' | 'approved' | 'rejected' | 'completed' | 'cancelled'
+export type EventStatus = 'draft' | 'pending_venue' | 'pending_venue_approval' | 'pending_treasurer_approval' | 'pending_dean_approval' | 'pending_vice_chancellor_approval' | 'pending_approval' | 'approved' | 'rejected' | 'completed' | 'cancelled' | 'full'
 export type RegistrationStatus = 'registered' | 'pending_payment' | 'payment_rejected' | 'cancelled'
 export type ApprovalLevel = 'venue_manager' | 'treasurer' | 'dean' | 'vice_chancellor'
 
@@ -25,7 +27,7 @@ export interface Event {
   time: string
   venue: string
   venueId: string
-  capacity: number
+  capacity: number | null
   registeredCount: number
   price: number
   isFree: boolean
@@ -36,6 +38,25 @@ export interface Event {
   imageUrl?: string
   approvalChain: ApprovalRecord[]
   createdAt: string
+  bankDetails?: string
+  approvalId?: string
+  organizerEmail?: string
+  organizerPhone?: string
+  organizerType?: string
+  organizerDepartment?: string
+  targetFaculties?: number[]
+  targetDepartments?: number[]
+}
+
+export interface Faculty {
+  faculty_id: number
+  faculty_name: string
+}
+
+export interface Department {
+  department_id: number
+  faculty_id: number
+  department_name: string
 }
 
 export interface ApprovalRecord {
@@ -76,6 +97,9 @@ export interface VenueRequest {
   eventName: string
   organizerName: string
   organizerDepartment: string
+  organizerEmail?: string
+  organizerPhone?: string
+  organizerType?: string
   venueId: string
   venueName: string
   requestedDate: string
@@ -83,6 +107,12 @@ export interface VenueRequest {
   status: 'pending' | 'approved' | 'rejected'
   comment?: string
   createdAt: string
+  description?: string
+  category?: string
+  eventType?: string
+  ticketPrice?: number
+  capacity?: number
+  rejectionReason?: string
 }
 
 export interface PaymentVerification {
